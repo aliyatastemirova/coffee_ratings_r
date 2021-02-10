@@ -1,0 +1,559 @@
+---
+title: "Coffee ratings"
+author: "Aliya Tastemirova"
+output: 
+  html_document:
+    df_print: paged
+---
+# Initializing the notebook
+
+There are four parts in this notebook:
+1. Initialization of the notebook and workspace setup\n
+2. Data Cleanup\n
+3. Data Exploration\n
+4. Data Vizualization\n
+
+## The data visualization part is done in Shiny
+### Shinyapps cannot be knitted to HTML. Please run the script in .Rmd format
+## Loading all required packages
+
+```{r}
+library(plotly)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(shiny)
+library(shinyWidgets)
+library(leaflet)
+```
+
+### Workspace setup: remove all data from working memory if it exists, set the random number generator, and turn off the scientific notation of large numbers. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+set.seed(9)
+options(scipen=999)
+```
+
+### Loading the dataset from github
+
+```{r coffee_ratings, echo=FALSE}
+coffee_ratings <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-07-07/coffee_ratings.csv')
+```
+
+## Data cleaning and preprocessing
+
+There are a lot of missing values in the dataset, as well as values that logically seem to be data entry mistakes.
+Data cleaning should be the first step before a proper visualization.
+
+```{r}
+# Owner seems to be an important variable that can be used later. Check if there are empty fields
+coffee_ratings[is.na(coffee_ratings$owner) > 0, ]
+# Get row indexes for such data samples
+which(is.na(coffee_ratings$owner))
+```
+
+There are 7 rows with missing value for owner. Owner_1 values are also missing.
+They can probably be replaced with the farm name, which exists for all 7 rows.
+
+```{r}
+# Replace missing owners with farm names
+coffee_ratings$owner <- replace(coffee_ratings$owner, is.na(coffee_ratings$owner) > 0, coffee_ratings$farm_name[is.na(coffee_ratings$owner) > 0])
+# Check if one row that previously had a missing value is filled with farm name
+coffee_ratings[365, ]
+```
+Seems to be good.
+
+Same procedure with the country of origin:
+```{r}
+coffee_ratings[is.na(coffee_ratings$country_of_origin) > 0, ]
+which(is.na(coffee_ratings$country_of_origin))
+```
+```{r}
+# There is only one row with missing country. According to Google, Racafe & Cia S.C.A is located in Colombia.
+coffee_ratings$country_of_origin <- replace(coffee_ratings$country_of_origin, is.na(coffee_ratings$country_of_origin) > 0, "Colombia")
+# Check if it is okay now
+coffee_ratings[1198, ]
+```
+
+```{r}
+# There are some country names that could be standardized for readability
+coffee_ratings$country_of_origin <- replace(coffee_ratings$country_of_origin, coffee_ratings$country_of_origin == "Cote d?Ivoire", "Côte d'Ivoire")
+
+coffee_ratings$country_of_origin <- replace(coffee_ratings$country_of_origin, coffee_ratings$country_of_origin == "Tanzania, United Republic Of", "Tanzania")
+```
+
+```{r}
+# Check if any total score values are missing
+coffee_ratings[is.na(coffee_ratings$total_cup_points) > 0, ]
+which(is.na(coffee_ratings$total_cup_points))
+```
+
+Looks good.
+
+Altitude, measured in mean meters seems to have some outliers. It is unlikely that the altitude is 190164. 
+Based on other columns (e.g. "altitude"), the correct value is entered instead.
+```{r}
+coffee_ratings$altitude_mean_meters <- replace(coffee_ratings$altitude_mean_meters, coffee_ratings$altitude_mean_meters == "190164.000
+", "1901.64")
+coffee_ratings$altitude_mean_meters <- replace(coffee_ratings$altitude_mean_meters, coffee_ratings$altitude_mean_meters == "110000.000
+", "1100")
+coffee_ratings$altitude_mean_meters <- replace(coffee_ratings$altitude_mean_meters, coffee_ratings$altitude_mean_meters == "11000.000", "1100")
+```
+
+Number of bags and bag weight can be combined to get total weight (number of bags*bag weight)
+
+```{r}
+# Convert few lbs values to kg to standardize weight
+coffee_ratings$bag_weight <- ifelse(str_detect(coffee_ratings$bag_weight, "lbs"), as.integer(strsplit(coffee_ratings$bag_weight, " ")[[1]][1])*0.4535924, coffee_ratings$bag_weight)
+
+# Remove kg notation to keep only number
+coffee_ratings$bag_weight <- ifelse(str_detect(coffee_ratings$bag_weight, " "), strsplit(coffee_ratings$bag_weight, " ")[[1]][1], coffee_ratings$bag_weight)
+
+# Create a new column total_weight by multiplying number of bags by bag weight
+coffee_ratings$total_weight <- as.integer(coffee_ratings$bag_weight)*as.integer(coffee_ratings$number_of_bags)
+```
+
+
+### Harvest year cleaning and standardizing
+Harvest year column seems to have a lot of missing values, messy values in different formats, etc.
+```{r}
+coffee_ratings[is.na(coffee_ratings$harvest_year) > 0, ]
+which(is.na(coffee_ratings$harvest_year))
+```
+This needs to be ran **twice** for good measure.
+
+```{r}
+# Looking at other rows, it seems to be fair to assume that harvest year can be the same as grading date year for most data samples. 
+# Replace missing values of harvest year with grading date
+coffee_ratings$harvest_year <- replace(coffee_ratings$harvest_year, is.na(coffee_ratings$harvest_year) > 0, coffee_ratings$grading_date[is.na(coffee_ratings$harvest_year) > 0])
+
+# Replace harvest year values that do not seem to be dates (e.g. one row has value "mmm") with grading date year
+coffee_ratings$harvest_year <- replace(coffee_ratings$harvest_year, which(sapply(coffee_ratings$harvest_year, function(x) !all(is.na(as.Date(as.character(x),format="%Y")))) == 0), coffee_ratings$grading_date[which(sapply(coffee_ratings$harvest_year, function(x) !all(is.na(as.Date(as.character(x),format="%Y")))) == 0)])
+
+# It is easier to standardize harvest year column by keeping only the year value, as the exact date is missing for most of the rows. 
+# Keep only year values in harvest_year column
+# str_detect() checks if a character exists in the value. This code keeps only the first value, e.g 2010/2011 becomes 2010
+coffee_ratings$harvest_year <- ifelse(str_detect(coffee_ratings$harvest_year, "/"), strsplit(coffee_ratings$harvest_year, "/")[[1]][1], coffee_ratings$harvest_year)
+
+# A value like 2010-2011 becomes 2010
+coffee_ratings$harvest_year <- ifelse(str_detect(coffee_ratings$harvest_year, "-"), strsplit(coffee_ratings$harvest_year, "-")[[1]][1], coffee_ratings$harvest_year)
+
+# A value like July 10th, 2010 becomes 2010
+coffee_ratings$harvest_year <- ifelse(str_detect(coffee_ratings$harvest_year, ","), strsplit(coffee_ratings$harvest_year[which(str_detect(coffee_ratings$harvest_year, ","))], ", ")[[1]][2], coffee_ratings$harvest_year)
+
+# A value like July 2010 becomes 2010
+coffee_ratings$harvest_year <- ifelse(str_detect(coffee_ratings$harvest_year, " "), strsplit(coffee_ratings$harvest_year, " ")[[1]][2], coffee_ratings$harvest_year)
+
+# This is clearly a data entry mistake, a harvest year cannot be 0004. The grading date year is 2011, so this is replaced with 2011.
+coffee_ratings$harvest_year <- ifelse(str_detect(coffee_ratings$harvest_year, "0004"), "2011", coffee_ratings$harvest_year)
+
+coffee_ratings$harvest_year <- replace(coffee_ratings$harvest_year, is.na(coffee_ratings$harvest_year)>0, "2010")
+coffee_ratings$harvest_year <- replace(coffee_ratings$harvest_year, coffee_ratings$harvest_year == "4T72010", "2010")
+```
+
+```{r}
+# This returns all row indexes, where harvest_year cannot be formatted as date. Now it returns 0 indexes, which is what was needed
+which(sapply(coffee_ratings$harvest_year, function(x) !all(is.na(as.Date(as.character(x),format="%Y")))) == 0)
+```
+```{r}
+# Make sure years look fine
+coffee_ratings %>%
+  count(harvest_year)
+```
+
+```{r}
+# Format harvest year in date format for visualizations
+coffee_ratings$harvest_year <- as.Date(as.character(coffee_ratings$harvest_year), format="%Y")
+```
+
+## Adding more data
+
+In order to create maps with leaflet library, latitude and longitude values are necessary. 
+Data for these values was collected from Google at <https://developers.google.com/public-data/docs/canonical/countries_csv> and adjusted a bit for convenience. The adjusted file is included in the exam folder, named "lat_long_countries.csv".
+
+```{r}
+# Load the dataset with latitudes and longitudes
+countries <- readr::read_csv("lat_long_countries.csv")
+
+# Adjust country names in the new dataframe to match Coffee Rating dataframe
+countries$name <- replace(countries$name, countries$name == "Puerto Rico", "United States (Puerto Rico)")
+countries$name <- replace(countries$name, countries$name == "Myanmar [Burma]", "Myanmar")
+
+# Combine the Coffee Ratings dataset and Countries dataset by country name
+combined <- left_join(coffee_ratings, countries, by=c("country_of_origin" = "name"))
+
+# Countries dataframe does not have such values for Hawaii. Data for Hawaii was collected from <https://www.latlong.net/place/hawaii-usa-10262.html>
+combined$latitude <- replace(combined$latitude, combined$country_of_origin == "United States (Hawaii)", "19.741755")
+combined$longitude <- replace(combined$longitude, combined$country_of_origin == "United States (Hawaii)", "-155.844437")
+
+# Finally, make sure latitude and longitude are formatted in integer format for mapping
+combined$longitude <- as.integer(combined$longitude)
+combined$latitude <- as.integer(combined$latitude)
+```
+
+There are a lot of countries and regions listed in the dataframe. A good option is to summarize by continent.
+Continent dataframe was collected from <http://statisticstimes.com/geography/countries-by-continents.php> and adjusted a bit for convenience. The adjusted file is included in the exam folder, named "continents.csv".
+
+```{r}
+continents <- readr::read_csv("continents.csv")
+combined <- left_join(combined, continents, by=c("country_of_origin" = "Country"))
+```
+## Data Exploration
+
+It would be interesting to see total harvests per country, which countries seem to produce the most coffee beans?
+
+```{r echo=FALSE}
+combined %>%
+  # Get the count of Origin country appearing in the dataframe
+  count(country_of_origin) %>%
+  # Simple barplot. Reorder() reorders data by count, n needs to be negative to sort in the descending order.
+  # Angle = 90 turns X axis ticks (countries) by 90 degrees, so the values do not overlap each other
+  ggplot(aes(x = reorder(country_of_origin, -n), y = n)) + geom_col(fill = "#0099f9") + labs(title = "Number of entries by country", x = "Country",
+    y = "Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+Mexico, Colombia and Guatemala seem to be the top producers of coffee beans. 
+Quantity does not equal quality. What is the Distribution of countries by Total Score?
+
+```{r echo=FALSE}
+data <- combined %>%
+  # Simple barplot. Reorder() reorders data by mean total score which needs to be negative to sort in the descending order.
+  # Angle = 90 turns X axis ticks (countries) by 90 degrees, so the values do not overlap each other
+  group_by(country_of_origin) %>%
+  summarise_at(vars(total_cup_points), list(n = mean))
+
+  ggplot(data=data, aes(x = reorder(country_of_origin, -n), y = n)) + geom_col(fill = "#0099f9") + labs(title = "Mean Total Score by country", x = "Country",
+    y = "Mean Total Score") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+Mean Total Score paints a completely different picture: Papua New Guinea, Ethiopia and Japan are new leaders.
+
+What are the top coffee producers - owners?
+```{r}
+data <- combined %>% 
+  count(owner) %>%
+  # Sort by count of samples, get top 10
+  slice_max(order_by = n, n = 10)
+
+# Simple barplot. Reorder() reorders data by count which needs to be negative to sort in the descending order.
+  # Angle = 90 turns X axis ticks (owners) by 90 degrees, so the values do not overlap each other
+ggplot(data, aes(x = reorder(owner, -n), y = n)) + geom_col(fill = "#0099f9") + labs(title = "Number of entries by owner", x = "Owner", y = "Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+The same plot, but the breakdown is by bean Variety.
+```{r}
+combined %>%
+  count(variety) %>%
+  ggplot(aes(x = reorder(variety, -n), y = n)) + geom_col(fill = "#0099f9") + labs(title = "Number of entries by variety", x = "Variety",
+    y = "Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+The most popular coffee plant is called Caturra. According to <https://varieties.worldcoffeeresearch.org/varieties/caturra>, it has a good yield potential of standard quality and grows in Central America. Interestingly, it is a mutation of variety Bourbon, which is the second popular variety in this dataframe. It also makes sense having in mind that most coffee seems to be produced in Central and South America.
+Having all values filled in for Variety does not seem to be important for data visualizations, and also cannot be logically deduced. Hence, the large number of NA values can be ignored in this case.
+
+
+Checking more information about the dataset. There is much more data on Arabica species than on Robusta.Robusta originated in Ethiopia and now grows all over Africa <https://en.wikipedia.org/wiki/Coffea_canephora#Cultivation_and_use>. It has a greater crop yield than Arabica, however, this dataframe does not contain that many data samples compared to Arabica. It could mean that this data set is skewed towards Central and South America. According to Wikipedia <https://en.wikipedia.org/wiki/List_of_countries_by_coffee_production>, Brazil is the main exporter, followed by Vietnam and then Colombia. Ethiopia is on the 5th place, well above Mexico, which has the most data entries here.
+Wikipedia also says Robusta has a lot of good qualities, which can explain why Ethiopia has the second place for the mean Total Score.
+
+Majority of coffee plants have green color.
+```{r}
+fig1 <- combined %>%
+  count(color) %>%
+  ggplot(aes(x = reorder(color, -n), y = n)) + geom_col(fill = "#0099f9") + labs(title = "Number of entries by color of beans", x = "color",
+    y = "Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+fig2 <- combined %>%
+  count(species) %>%
+  ggplot(aes(x = reorder(species, -n), y = n)) + geom_col(fill = "#0099f9") + labs(title = "Number of entries by species of beans", x = "Species",
+    y = "Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+fig1
+fig2
+
+```
+What about a country distribution by kg?
+```{r}
+data <- combined %>%
+  # Get the sum of total weight grouped by Origin country appearing in the dataframe
+  group_by(country_of_origin) %>%
+  summarise_at(vars(total_weight), list(total_weight = sum))
+
+  # Simple barplot. Reorder() reorders data by total_weight which needs to be negative to sort in the descending order.
+  # Angle = 90 turns X axis ticks (countries) by 90 degrees, so the values do not overlap each other
+ggplot(data=data, aes(x = reorder(country_of_origin, -total_weight), y = total_weight)) + geom_col(fill = "#0099f9") + labs(title = "Coffee production (kg) by country", x = "Country",
+    y = "Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+Now it seems that Colombia, Guatemala and Brazil are the biggest coffee producers based on this dataframe. None of these countries are among top 5 countries by the average Total Score of coffee quality.
+
+
+## Data Visualization
+
+Create a shinyapp that can be later deployed.
+This is an interactive dashboard with various visualizations.
+All visualizations on the Dashboard are chosen in such a way that they can be more or less intuitive for everyone.
+The dashboard should pop up in a new window.
+
+```{r}
+# Code for the User Interface of the Dashboard
+ui <- fluidPage(
+  # Add Dashboard Title
+  titlePanel('Coffee Quality Ratings'),
+  # Subtitle with a break line, describes the first plot
+  HTML(paste(h2("Map of coffee harvests"),'<br/>')),
+  # Set the dashboard theme
+  theme = shinythemes::shinytheme('flatly'),
+  # Sidebar layout: filters (inputs) on the left, output (map) on the right
+  sidebarLayout(
+    sidebarPanel(
+      HTML(paste(h4("Filter the map by coffee producer (owner), harvest year and the total score"),'<br/>')),
+      # Select input with possibility to select multiple owners. Default option is "All owners", where the data is not filtered by owner at all
+      selectInput("owner", 'Select Owner', selected="All owners", choices=c("All owners", unique(combined$owner)), multiple = TRUE),
+      # Filter the harvest year by the date range
+      dateRangeInput("harvest_year", "Select Harvest Year", "2010-01-01", "2018-12-01"),
+      # Filter by score. This is also filtered as a range
+      sliderInput("score", "Select Score", 0, 100, c(0, 91)),
+      # About button. When clicked, shows popup with a short description of the dashboard
+      actionButton("show_about", "About")
+    ),
+    mainPanel( 
+      # Map output with all harvests
+      leaflet::leafletOutput('map')
+    )
+  ),
+  # br() is a quick and easy way to add padding between plots
+  br(),
+  br(),
+  # Sidebar layout: filters (inputs) on the left, output (radar plot) on the right
+  HTML(paste(h2("Coffee qualities scores by country"),'<br/>')),
+  sidebarLayout(
+    sidebarPanel(
+      HTML(paste(h4("Filter the Radar Plot by country"),'<br/>')),
+      # Select input to filter by country.
+      # The radar plot gives an overview of individual coffee qualities for a country
+      selectInput("country", 'Select Country', selected="Ethiopia", choices=c(unique(combined$country_of_origin))),
+    ),
+    mainPanel( 
+      # Map output with all harvests
+      plotly::plotlyOutput("radar")
+    )
+  ),
+  br(),
+  br(),
+  HTML(paste(h2("More interesting plots for data exploration"),'<br/>')),
+  # Split row to fit two plots: scores by continent, count of harvests by continent
+  splitLayout(cellWidths = c("40%", "60%"), plotly::plotlyOutput("score_plot"), plotly::plotlyOutput("count_plot")),
+  br(),
+  # Plot with distributions of individual scores of coffee qualities
+  plotly::plotlyOutput("distributions"),
+  br(),
+  br(),
+  # Check for possible correlation between variables and the Total Score
+  plotly::plotlyOutput("scatter"),
+  br(),
+  br(),
+  # Score statistics by Species and Processing Method
+  plotly::plotlyOutput("boxplot"), 
+  br(),
+  # Mean Total Score by Variety
+  plotly::plotlyOutput("barplot", height="100%"),
+  br(),
+  br(),
+  # Score statistics by Country
+  plotly::plotlyOutput("violin")
+)
+
+# Server (backend) code for the Dashboard. Here the plots are created and inputs are processed
+server <- function(input, output, session) {
+  # Text for "About" popup
+  about <- "This is a dashboard for exploring data about Coffee Ratings. The data source is tidytuesday from July 2020, accessible at <https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-07-07>. It contains total scores, species, countries of production, as well as different coffee bean qualities, such as aroma, acidity, flavor, etc. All visualizations are interactive!"
+  
+  # Event-based modal dialog (popup), is activated when "About" button is clicked
+  observeEvent(input$show_about, {
+    showModal(modalDialog(about, title = 'About'))
+    })
+  
+  # Map plot, filtered by inputs
+  # Uses leaflet library
+  # This gives a nice superficial overview of coffee production around the world, as well as a possibility to drill down into details by year, manufacturer, total score and see coffee qualities by clicking on a data point if necessary. Interacting with this map provides a lot of useful information at once.
+  output$map <- leaflet::renderLeaflet({
+    # If there is no input - there is no output, instead of the error
+    req(input$owner)
+    req(input$harvest_year)
+    req(input$score)
+    
+    combined %>% 
+      filter(
+        if (str_detect(input$owner, "All owners")) {
+          owner == combined$owner
+        } else {
+          owner == input$owner
+        },
+        harvest_year >= input$harvest_year[1],
+        harvest_year <= input$harvest_year[2],
+        total_cup_points >= input$score[1],
+        total_cup_points <= input$score[2],
+      ) %>% 
+      leaflet::leaflet() %>% 
+      # Set the view center to the center of the world <https://en.wikipedia.org/wiki/Geographical_centre_of_Earth>
+      setView(40.866667, 34.566667, zoom = 2) %>%
+      leaflet::addProviderTiles(providers$OpenStreetMap) %>% 
+      addCircleMarkers(
+        # When a data sample is clicked on, the information below is displayed.
+        popup = paste("Owner", combined$owner, "<br>",
+                      "Score", combined$total_cup_points, "<br>", 
+                      "<br>",
+                      "Aroma", combined$aroma, "<br>",
+                      "Flavor", combined$flavor, "<br>",
+                      "Aftertaste", combined$aftertaste, "<br>",
+                      "Acidity", combined$acidity, "<br>",
+                      "Body", combined$body, "<br>",
+                      "Balance", combined$balance, "<br>",
+                      "Uniformity", combined$uniformity, "<br>",
+                      "Cup cleanliness", combined$clean_cup, "<br>",
+                      "Sweetness", combined$sweetness, "<br>",
+                      "Cupper points", combined$cupper_points, "<br>",
+                      "Moisture", combined$moisture, "<br>", 
+                      "Defects", combined$category_one_defects, "<br>"), radius = ~sqrt(total_cup_points)/3, fillColor = 'steelblue', color = 'steelblue', opacity = 0.6
+      )
+  })
+  
+  # Plotting radar plot for each coffee quality to get a nice insight into each score by country
+  output$radar <- plotly::renderPlotly({
+    req(input$country)
+    
+    combined %>%
+      filter(country_of_origin == input$country) %>%
+      plot_ly(type = 'scatterpolar',
+        r = c(~aroma, ~flavor, ~aftertaste, ~acidity, ~body, ~balance, ~uniformity, ~clean_cup, ~sweetness,       ~cupper_points), theta = c('Aroma','Flavor', 'Aftertaste', 'Acidity', 'Body', 'Balance', 'Uniformity', 'Clean cup', 'Sweetness', 'Cupper points'), fill = 'toself', height = 450, width = 450) %>%
+      layout(polar = list(radialaxis = list(visible = T, range = c(0, 10))), showlegend = F)
+  })
+  
+  # Total Score by Continent for each harvest year.
+  # Plotly library is used.
+  # This gives a general idea about where each continent stands when it comes to Total Score
+  output$score_plot <- plotly::renderPlotly({
+    combined %>%
+      plot_ly(x = ~as.character(harvest_year), y = ~total_cup_points, hoverinfo = "text", text = ~Continent) %>%
+      add_markers(color = ~Continent) %>%
+      layout(title = "Total score by year by continent", xaxis = list(title = "Harvest Year"),
+         yaxis = list(title = "Total score", range = c(0, 100))) %>%
+      # Highlight for possibility to highlight individual data points
+      highlight()
+  })
+  
+  # Count of harvest by Continent for each harvest year to see how many different harvests were registered per continent. It's easier to see data by continent rather than by country.
+  output$count_plot <- plotly::renderPlotly({
+    combined %>%
+      count(harvest_year, Continent) %>%
+      plot_ly(x = ~as.character(harvest_year), y = ~n, hoverinfo = "text", text = ~Continent) %>%
+      add_markers(color=~Continent) %>%
+      layout(title = "Total number of coffee producers by year by continent", xaxis = list(title = "Year"),
+         yaxis = list(title = "Number of coffee producers")) %>%
+      highlight()
+  })
+  
+  # Getting density for each coffee quality for plotting density below
+  d.a <- density(combined$aroma, na.rm = TRUE)
+  d.f <- density(combined$flavor, na.rm = TRUE)
+  d.af <- density(combined$aftertaste, na.rm = TRUE)
+  d.ac <- density(combined$acidity, na.rm = TRUE)
+  d.b <- density(combined$body, na.rm = TRUE)
+  d.ba <- density(combined$balance, na.rm = TRUE)
+  d.u <- density(combined$uniformity, na.rm = TRUE)
+  d.cc <- density(combined$clean_cup, na.rm = TRUE)
+  d.s <- density(combined$sweetness, na.rm = TRUE)
+  d.cp <- density(combined$cupper_points, na.rm = TRUE)
+  
+  # Plotting density of each quality provides a nice overview of score distributions.
+  # For example, Cup cleanliness, Uniformity and Sweetness have a similar distribution and tend to have a higher mean     than the rest of the scores. 
+  # The rest of the scores seem to have a similar distribution to each other.
+  output$distributions <- plotly::renderPlotly({
+    combined %>%
+      plot_ly() %>%
+      add_lines(x = ~d.a$x, y = ~d.a$y, name = "Aroma", fill = "tozeroy") %>%
+      add_lines(x = ~d.f$x, y = ~d.f$y, name = "Flavor", fill = "tozeroy") %>%
+      add_lines(x = ~d.af$x, y = ~d.af$y, name = "Aftertaste", fill = "tozeroy") %>%
+      add_lines(x = ~d.ac$x, y = ~d.ac$y, name = "Acidity", fill = "tozeroy") %>%
+      add_lines(x = ~d.b$x, y = ~d.b$y, name = "Body", fill = "tozeroy") %>%
+      add_lines(x = ~d.ba$x, y = ~d.ba$y, name = "Balance", fill = "tozeroy") %>%
+      add_lines(x = ~d.u$x, y = ~d.u$y, name = "Uniformity", fill = "tozeroy") %>%
+      add_lines(x = ~d.cc$x, y = ~d.cc$y, name = "Cup cleanliness", fill = "tozeroy") %>%
+      add_lines(x = ~d.s$x, y = ~d.s$y, name = "Sweetness", fill = "tozeroy") %>%
+      add_lines(x = ~d.cp$x, y = ~d.cp$y, name = "Cupper points", fill = "tozeroy") %>%
+      layout(title = "Score distribution by quality", xaxis = list(title = "Distribution of scores per quality"),
+         yaxis = list(title = "n")) %>%
+      highlight()
+  })
+  
+  # Plotting a scatterplot to check for possible correlations based on different factors: moisture, defects from       # category one and two, and altitude. Coffee qualities are not plotted, as they constitute the Total Score and have   # a similar distribution. It is more interesting to see what influences that score, apart from what makes up that    # score.
+  # According to the resulting plots, there is most probably no positive or negative correlation between these         # variables and the score
+  output$scatter <- plotly::renderPlotly({
+    fig1 <- combined %>%
+      plot_ly(x = ~moisture, y=~total_cup_points, hoverinfo = "text", text = ~moisture) %>%
+      add_markers(name = "Moisture") %>%
+      layout(yaxis = list(title = "Total score", range = c(0, 100)))
+    
+    fig2 <- combined %>%
+      plot_ly(x = ~category_one_defects, y=~total_cup_points, hoverinfo = "text", text = ~category_one_defects) %>%
+      add_markers(name = "Category one defects")
+    
+    fig3 <- combined %>%
+      plot_ly(x = ~category_two_defects, y=~total_cup_points, hoverinfo = "text", text = ~category_two_defects) %>%
+      add_markers(name = "Category two defects")
+    
+    fig4 <- combined %>%
+      plot_ly(x = ~altitude_mean_meters, y=~total_cup_points, hoverinfo = "text", text = ~altitude_mean_meters) %>%
+      add_markers(name = "Altitude")
+    
+    fig <- subplot(fig1, fig2, fig3, fig4, shareY = TRUE) %>%
+       layout(title="Correlation between different qualities and the Total Score")
+  })
+
+  # Plotting boxplot to see the Total Score by categorical variables.
+  # There is not a huge difference between the score distribution for each variable
+  output$boxplot <- plotly::renderPlotly({
+    fig1 <- combined %>%
+      plot_ly(x = ~species, y=~total_cup_points) %>%
+      add_boxplot(name = "Species") %>%
+      layout(yaxis = list(title = "Total score", range = c(0, 100)))
+    
+    fig2 <- combined %>%
+      plot_ly(x = ~processing_method, y=~total_cup_points) %>%
+      add_boxplot(name = "Processing method")
+    
+    fig3 <- combined %>%
+      plot_ly(x = ~color, y=~total_cup_points) %>%
+      add_boxplot(name = "Bean color")
+    
+    fig <- subplot(fig1, fig2, fig3, shareX = FALSE, shareY=TRUE) %>%
+       layout(title="Total Score statistics by different variables")
+  })
+  
+  # Plotting a barplot with mean Total Score per variety to see if some Variety influences the scores
+  # Ethipial Yirgacheffe seems to have better coffee qualities
+  output$barplot <- plotly::renderPlotly({
+    data <- combined %>%
+      group_by(variety) %>%
+      summarise_at(vars(total_cup_points), list(total_cup_points = mean))
+    
+    plot_ly(data=data, x = ~total_cup_points, y=~reorder(variety, total_cup_points), height = 800, width=550, orientation = 'h') %>%
+      add_bars() %>%
+      layout(title = "Total Score statistics by Bean Variety", xaxis = list(title = "Total score"),
+         yaxis = list(title = "Variety"), autosize = FALSE)
+  })
+  
+  # Plotting a violin plot with the distribution of Total Scores by country to check if a specific country tends to    # get higher scores on average.
+  # An obvious insight is that Honduras has an outlier. Also, Papua New Guinea was first by the mean Total Score 
+  # during Data Exploration because there is only one data sample and it has a high score. This means there is not     # enough data to conclude anything about their coffee.
+  output$violin <- plotly::renderPlotly({
+    combined %>%
+      plot_ly(x = ~total_cup_points, y=~country_of_origin, height = 800, type="violin", orientation="h") %>%
+      layout(title = "Total Score statistics by Country of origin", xaxis = list(title = "Total score"),
+         yaxis = list(title = "Country of origin", autosize = FALSE))
+  })
+  
+}
+
+shinyApp(ui, server)
+```
+
+
+
