@@ -17,4 +17,4 @@ This is a dashboard created with R and Shiny.
 - Two CSV files with additional data (continents and latitude & longitude per country)
 
 # Dashboard preview
-![Dashboard preview]("/main/dashboard.png")
+![Dashboard preview](dashboard.png)
